@@ -51,11 +51,21 @@ def cfg(guild_id: int) -> dict:
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (id={bot.user.id})")
+    guild = discord.Object(id=GUILD_ID)
+
     try:
-        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print(f"Synced {len(synced)} commands to guild {GUILD_ID}")
+        # The commands are defined on the global tree. Copy them into the
+        # configured test/server guild so Discord registers them immediately.
+        bot.tree.copy_global_to(guild=guild)
+        guild_synced = await bot.tree.sync(guild=guild)
+        print(f"Synced {len(guild_synced)} commands to guild {GUILD_ID}")
+
+        # Also sync the global tree so commands are available outside the
+        # configured guild after Discord's normal global propagation delay.
+        global_synced = await bot.tree.sync()
+        print(f"Synced {len(global_synced)} global commands")
     except Exception as e:
-        print(f"Failed to sync commands: {e}")
+        print(f"Failed to sync commands: {type(e).__name__}: {e}")
 
 
 @bot.event
