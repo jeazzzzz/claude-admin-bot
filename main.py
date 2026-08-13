@@ -90,7 +90,7 @@ async def on_message(message: discord.Message):
     am = c.get("automod", {})
 
     # Auto-mod: link filtering
-    if am.get("links") and "http://" in message.content or "https://" in message.content:
+    if am.get("links") and ("http://" in message.content or "https://" in message.content):
         if not any(r.permissions.administrator for r in message.author.roles):
             try:
                 await message.delete()
