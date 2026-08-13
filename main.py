@@ -1,6 +1,6 @@
 """
 Claude Admin Bot - conversational, mention-driven, server-aware.
-Uses Google Gemini (free) as the brain.
+Uses OpenRouter (free Llama 3.3 70B) as the brain.
 """
 
 import os
@@ -23,13 +23,13 @@ print(f"[BOOT] discord.py {discord.__version__}", flush=True)
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GUILD_ID_STR = os.environ.get("GUILD_ID")
 OWNER_ID_STR = os.environ.get("OWNER_ID")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 for name, val in [
     ("DISCORD_TOKEN", DISCORD_TOKEN),
     ("GUILD_ID", GUILD_ID_STR),
     ("OWNER_ID", OWNER_ID_STR),
-    ("GEMINI_API_KEY", GEMINI_API_KEY),
+    ("OPENROUTER_API_KEY", OPENROUTER_API_KEY),
 ]:
     if not val:
         print(f"[FATAL] {name} is missing!", flush=True)
@@ -38,7 +38,7 @@ for name, val in [
 GUILD_ID = int(GUILD_ID_STR)
 OWNER_ID = int(OWNER_ID_STR)
 
-print(f"[BOOT] Guild={GUILD_ID} Owner={OWNER_ID} GeminiKey={'set' if GEMINI_API_KEY else 'MISSING'}", flush=True)
+print(f"[BOOT] Guild={GUILD_ID} Owner={OWNER_ID} ORKey={'set' if OPENROUTER_API_KEY else 'MISSING'}", flush=True)
 
 # --- Bot ---
 intents = discord.Intents.all()
@@ -46,82 +46,48 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 conversation_memory: dict[int, list[dict]] = {}
 
+
 # =============================================================================
-# GEMINI API CALL
+# OPENROUTER API CALL
 # =============================================================================
-# Try multiple model names in order until one works (handles regional/account variance)
-GEMINI_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-pro",
-    "gemini-pro",
-]
+# OpenRouter is OpenAI-compatible. We use a free Llama 3.3 70B model.
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 
-def call_gemini(system_prompt: str, history: list[dict], user_msg: str, max_tokens: int = 1500) -> str:
-    """Synchronous Gemini call. Tries multiple models until one works."""
-    contents = []
+def call_openrouter(system_prompt: str, history: list[dict], user_msg: str, max_tokens: int = 1500) -> str:
+    """Synchronous OpenRouter call. Returns assistant text."""
+    messages = [{"role": "system", "content": system_prompt}]
     for msg in history:
-        role = "model" if msg["role"] == "assistant" else "user"
-        contents.append({
-            "role": role,
-            "parts": [{"text": msg["content"]}],
-        })
-    contents.append({
-        "role": "user",
-        "parts": [{"text": user_msg}],
-    })
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_msg})
 
     payload = {
-        "systemInstruction": {
-            "parts": [{"text": system_prompt}]
-        },
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": max_tokens,
-            "temperature": 0.4,
-        },
+        "model": OPENROUTER_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.4,
     }
 
-    last_error = None
-    for model in GEMINI_MODELS:
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={GEMINI_API_KEY}"
-        )
-        try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            candidates = data.get("candidates", [])
-            if not candidates:
-                print(f"[GEMINI] {model}: no candidates in response", flush=True)
-                last_error = "no candidates"
-                continue
-            parts = candidates[0].get("content", {}).get("parts", [])
-            text = "".join(p.get("text", "") for p in parts).strip()
-            if text:
-                print(f"[GEMINI] Using model: {model}", flush=True)
-                return text
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="ignore")[:300]
-            print(f"[GEMINI] {model} -> HTTP {e.code}: {body}", flush=True)
-            last_error = f"HTTP {e.code}"
-            if e.code in (400, 403):  # bad request or auth - won't help to retry
-                continue
-            continue
-        except Exception as e:
-            print(f"[GEMINI] {model} -> {e}", flush=True)
-            last_error = str(e)
-            continue
+    req = urllib.request.Request(
+        OPENROUTER_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/jeazzzzz/claude-admin-bot",
+            "X-Title": "Claude Admin Bot",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
 
-    raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as e:
+        print(f"[OR] Unexpected response: {json.dumps(data)[:500]}", flush=True)
+        raise RuntimeError(f"Bad OpenRouter response: {e}")
 
 
 # =============================================================================
@@ -234,7 +200,6 @@ async def on_message(message: discord.Message):
         )
         return
 
-    # Strip the mention
     content = message.content
     for mention in message.mentions:
         content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
@@ -258,22 +223,26 @@ async def on_message(message: discord.Message):
             loop = asyncio.get_event_loop()
             reply = await loop.run_in_executor(
                 None,
-                lambda: call_gemini(full_system, history[:-1], content, max_tokens=1500),
+                lambda: call_openrouter(full_system, history[:-1], content, max_tokens=1500),
             )
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="ignore")[:500]
-            print(f"[GEMINI] HTTP {e.code}: {body}", flush=True)
-            if e.code == 429:
-                await message.channel.send("Gemini rate limit hit. Wait a minute and try again.")
-            elif e.code == 403:
-                await message.channel.send("Gemini API key invalid or region blocked. Check your GEMINI_API_KEY.")
+            print(f"[OR] HTTP {e.code}: {body}", flush=True)
+            if e.code == 401:
+                await message.channel.send("OpenRouter key invalid. Check OPENROUTER_API_KEY.")
+            elif e.code == 402:
+                await message.channel.send("OpenRouter: free tier limit or credits needed.")
+            elif e.code == 429:
+                await message.channel.send("OpenRouter rate limit. Wait a minute.")
+            elif e.code == 404:
+                await message.channel.send("OpenRouter model not found. Trying alt...")
             else:
-                await message.channel.send(f"Gemini API error {e.code}. Check logs.")
+                await message.channel.send(f"OpenRouter error {e.code}.")
             return
         except Exception as e:
-            print(f"[GEMINI] Error: {e}", flush=True)
+            print(f"[OR] Error: {e}", flush=True)
             traceback.print_exc()
-            await message.channel.send(f"Something went wrong talking to Gemini: {e}")
+            await message.channel.send(f"Something went wrong: {e}")
             return
 
     print(f"[REPLY] {reply[:200]}", flush=True)
