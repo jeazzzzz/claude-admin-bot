@@ -51,19 +51,30 @@ def cfg(guild_id: int) -> dict:
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (id={bot.user.id})")
+
+    # Register/sync commands once per process. on_ready can fire more than once
+    # after reconnects, so don't repeatedly overwrite the command tree.
+    if getattr(bot, "_commands_synced", False):
+        return
+
     guild = discord.Object(id=GUILD_ID)
-
     try:
-        # The commands are defined on the global tree. Copy them into the
-        # configured test/server guild so Discord registers them immediately.
-        bot.tree.copy_global_to(guild=guild)
-        guild_synced = await bot.tree.sync(guild=guild)
-        print(f"Synced {len(guild_synced)} commands to guild {GUILD_ID}")
+        # Explicitly copy every globally-declared command into the target guild.
+        global_commands = bot.tree.get_commands()
+        print(f"Global commands loaded: {len(global_commands)}")
+        print("Global command names: " + ", ".join(c.name for c in global_commands))
 
-        # Also sync the global tree so commands are available outside the
-        # configured guild after Discord's normal global propagation delay.
-        global_synced = await bot.tree.sync()
-        print(f"Synced {len(global_synced)} global commands")
+        bot.tree.clear_commands(guild=guild)
+        bot.tree.copy_global_to(guild=guild)
+        guild_commands = bot.tree.get_commands(guild=guild)
+        print(f"Guild commands before sync: {len(guild_commands)}")
+        print("Guild command names: " + ", ".join(c.name for c in guild_commands))
+
+        synced = await bot.tree.sync(guild=guild)
+        print(f"Synced {len(synced)} commands to guild {GUILD_ID}")
+        print("Synced command names: " + ", ".join(c.name for c in synced))
+
+        bot._commands_synced = True
     except Exception as e:
         print(f"Failed to sync commands: {type(e).__name__}: {e}")
 
