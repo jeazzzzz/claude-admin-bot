@@ -52,7 +52,7 @@ conversation_memory: dict[int, list[dict]] = {}
 # =============================================================================
 # OpenRouter is OpenAI-compatible. We use a free Llama 3.3 70B model.
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct"
+OPENROUTER_MODEL = "openai/gpt-oss-120b:free"
 
 
 def call_openrouter(system_prompt: str, history: list[dict], user_msg: str, max_tokens: int = 1500) -> str:
