@@ -49,16 +49,18 @@ conversation_memory: dict[int, list[dict]] = {}
 # =============================================================================
 # GEMINI API CALL
 # =============================================================================
-# Gemini API uses a different URL pattern. We use the stable v1beta endpoint.
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash-exp:generateContent"
-)
+# Try multiple model names in order until one works (handles regional/account variance)
+GEMINI_MODELS = [
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-pro",
+    "gemini-pro",
+]
 
 
 def call_gemini(system_prompt: str, history: list[dict], user_msg: str, max_tokens: int = 1500) -> str:
-    """Synchronous Gemini call. Returns assistant text."""
-    # Convert history to Gemini's contents format
+    """Synchronous Gemini call. Tries multiple models until one works."""
     contents = []
     for msg in history:
         role = "model" if msg["role"] == "assistant" else "user"
@@ -66,7 +68,6 @@ def call_gemini(system_prompt: str, history: list[dict], user_msg: str, max_toke
             "role": role,
             "parts": [{"text": msg["content"]}],
         })
-    # Append current user message
     contents.append({
         "role": "user",
         "parts": [{"text": user_msg}],
@@ -83,24 +84,44 @@ def call_gemini(system_prompt: str, history: list[dict], user_msg: str, max_toke
         },
     }
 
-    url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    last_error = None
+    for model in GEMINI_MODELS:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={GEMINI_API_KEY}"
+        )
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            candidates = data.get("candidates", [])
+            if not candidates:
+                print(f"[GEMINI] {model}: no candidates in response", flush=True)
+                last_error = "no candidates"
+                continue
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text = "".join(p.get("text", "") for p in parts).strip()
+            if text:
+                print(f"[GEMINI] Using model: {model}", flush=True)
+                return text
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="ignore")[:300]
+            print(f"[GEMINI] {model} -> HTTP {e.code}: {body}", flush=True)
+            last_error = f"HTTP {e.code}"
+            if e.code in (400, 403):  # bad request or auth - won't help to retry
+                continue
+            continue
+        except Exception as e:
+            print(f"[GEMINI] {model} -> {e}", flush=True)
+            last_error = str(e)
+            continue
 
-    # Parse Gemini response
-    try:
-        candidates = data["candidates"]
-        parts = candidates[0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip()
-    except (KeyError, IndexError) as e:
-        print(f"[GEMINI] Unexpected response shape: {json.dumps(data)[:500]}", flush=True)
-        raise RuntimeError(f"Bad Gemini response: {e}")
+    raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
 
 
 # =============================================================================
